@@ -1,7 +1,8 @@
 import asyncio
 import json
 import uuid
-from typing import Any, Dict, List, Optional, Union
+from abc import ABC, abstractmethod
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import (
@@ -29,7 +30,33 @@ from crewai.tools.agent_tools import AgentTools
 from crewai.utilities import I18N, FileHandler, Logger, RPMController
 
 
-class Crew(BaseModel):
+class Chainable(ABC):
+    @abstractmethod
+    def then(self, action: "CrewTask") -> "CrewResult":
+        pass
+
+class CrewResult(BaseModel, Chainable):
+    result: List[str]
+
+    def then(self, action: "CrewTask") -> "CrewResult":
+        return action(self.result)
+    
+    def __str__(self) -> str:
+        return str(self.result)
+    
+class CrewTask(BaseModel, Chainable):
+    action: Callable[[List[str]], List[str]] 
+
+    def then(self, result: List[str]) -> CrewResult:
+        new_result = self.action(result)
+        return CrewResult(result=new_result)
+    
+    def __call__(self, result: List[str]) -> CrewResult:
+        """Makes the CrewTask object callable."""
+        return self.then(result)
+
+
+class Crew(BaseModel, Chainable):
     """
     Represents a group of agents, defining how they should collaborate and the tasks they should perform.
 
@@ -64,6 +91,7 @@ class Crew(BaseModel):
     _short_term_memory: Optional[InstanceOf[ShortTermMemory]] = PrivateAttr()
     _long_term_memory: Optional[InstanceOf[LongTermMemory]] = PrivateAttr()
     _entity_memory: Optional[InstanceOf[EntityMemory]] = PrivateAttr()
+    _result: Optional[CrewResult] = PrivateAttr(default=None)
 
     cache: bool = Field(default=True)
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -246,7 +274,7 @@ class Crew(BaseModel):
         del task_config["agent"]
         return Task(**task_config, agent=task_agent)
 
-    def kickoff(self, inputs: Optional[Dict[str, Any]] = {}) -> str:
+    def kickoff(self, inputs: Optional[Dict[str, Any]] = {}) -> CrewResult:
         """Starts the crew to work on its assigned tasks."""
         self._execution_span = self._telemetry.crew_execution_span(self)
         # type: ignore # Argument 1 to "_interpolate_inputs" of "Crew" has incompatible type "dict[str, Any] | None"; expected "dict[str, Any]"
@@ -288,29 +316,36 @@ class Crew(BaseModel):
             key: sum([m[key] for m in metrics if m is not None]) for key in metrics[0]
         }
 
-        return result
+        print(result)
+
+        self._result = CrewResult(result=[result])
+        return self._result
 
     def train(self, n_iterations: int) -> None:
         # TODO: Implement training
         pass
 
-    def kickoff_for_each(self, inputs: List[Dict[str, Any]]) -> List[str]:
+    def kickoff_for_each(self, inputs: List[Dict[str, Any]]) -> CrewResult:
         """Executes the Crew's workflow for each input in the list and aggregates results."""
-        results = []
+        results: List[str] = []
 
         for input_data in inputs:
             crew = self.copy()
 
             output = crew.kickoff(inputs=input_data)
-            results.append(output)
+            results.append(output.result[0])
 
-        return results
 
-    async def kickoff_async(self, inputs: Optional[Dict[str, Any]] = {}) -> Union[str, Dict]:
+        # TODO: Kickoff returns a CrewResult, but we need to return a CrewResult with a list of CrewResults
+        print("RESULTS IN KICKOFF FOR EACH", results)
+        self._result = CrewResult(result=results)
+        return self._result
+
+    async def kickoff_async(self, inputs: Optional[Dict[str, Any]] = {}) -> CrewResult:
         """Asynchronous kickoff method to start the crew execution."""
         return await asyncio.to_thread(self.kickoff, inputs)
 
-    async def kickoff_for_each_async(self, inputs: List[Dict]) -> List[str]:
+    async def kickoff_for_each_async(self, inputs: List[Dict]) -> CrewResult:
         async def run_crew(input_data):
             crew = self.copy()
 
@@ -321,7 +356,8 @@ class Crew(BaseModel):
 
         results = await asyncio.gather(*tasks)
 
-        return results
+        self._result = CrewResult(result=results)
+        return self._result
 
     def _run_sequential_process(self) -> str:
         """Executes tasks sequentially and returns the final output."""
@@ -438,6 +474,12 @@ class Crew(BaseModel):
             **copied_data, agents=cloned_agents, tasks=cloned_tasks)
 
         return copied_crew
+    
+    def then(self, action: CrewTask) -> CrewResult:
+        """Enables chaining of CrewTask or functions after Crew execution."""
+        if not hasattr(self, "_result"):
+            raise ValueError("No previous CrewResult found.")
+        return self._result.then(action)
 
     def _set_tasks_callbacks(self) -> None:
         """Sets callback for every task suing task_callback"""
