@@ -75,7 +75,7 @@ class Crew(BaseModel, Chainable):
         max_rpm: Maximum number of requests per minute for the crew execution to be respected.
         prompt_file: Path to the prompt json file to be used for the crew.
         id: A unique identifier for the crew instance.
-        full_output: Whether the crew should return the full output with all tasks outputs or just the final output.
+        full_output: Whether the crew should return the full output with all tasks outputs and token usage metrics or just the final output.
         task_callback: Callback to be executed after each task for every agents execution.
         step_callback: Callback to be executed after each step for every agents execution.
         share_crew: Whether you want to share the complete crew information and execution with crewAI to make the library better, and allow us to train models.
@@ -113,7 +113,7 @@ class Crew(BaseModel, Chainable):
     )
     full_output: Optional[bool] = Field(
         default=False,
-        description="Whether the crew should return the full output with all tasks outputs or just the final output.",
+        description="Whether the crew should return the full output with all tasks outputs and token usage metrics or just the final output.",
     )
     manager_llm: Optional[Any] = Field(
         description="Language model that will run the agent.", default=None
@@ -303,7 +303,6 @@ class Crew(BaseModel, Chainable):
             result, manager_metrics = self._run_hierarchical_process()
             # type: ignore # Cannot determine type of "manager_metrics"
             metrics.append(manager_metrics)
-
         else:
             raise NotImplementedError(
                 f"The process '{self.process}' is not implemented yet."
@@ -316,10 +315,11 @@ class Crew(BaseModel, Chainable):
             key: sum([m[key] for m in metrics if m is not None]) for key in metrics[0]
         }
 
+
         print(result)
 
         self._result = CrewResult(result=[result])
-        return self._result
+        return result
 
     def train(self, n_iterations: int) -> None:
         # TODO: Implement training
@@ -383,6 +383,7 @@ class Crew(BaseModel, Chainable):
                 )
 
             output = task.execute(context=task_output)
+
             if not task.async_execution:
                 task_output = output
 
@@ -395,9 +396,12 @@ class Crew(BaseModel, Chainable):
                     agent=role, task=task_output, status="completed")
 
         self._finish_execution(task_output)
-        return self._format_output(task_output)
+        # type: ignore # Item "None" of "Agent | None" has no attribute "_token_process"
+        token_usage = task.agent._token_process.get_summary()
+        # type: ignore # Incompatible return value type (got "tuple[str, Any]", expected "str")
+        return self._format_output(task_output, token_usage)
 
-    def _run_hierarchical_process(self) -> str:
+    def _run_hierarchical_process(self) -> Union[str, Dict[str, Any]]:
         """Creates and assigns a manager agent to make sure the crew completes the tasks."""
 
         i18n = I18N(prompt_file=self.prompt_file)
@@ -442,7 +446,10 @@ class Crew(BaseModel, Chainable):
 
         self._finish_execution(task_output)
         # type: ignore # Incompatible return value type (got "tuple[str, Any]", expected "str")
-        return self._format_output(task_output), manager._token_process.get_summary()
+        manager_token_usage = manager._token_process.get_summary()
+        return self._format_output(
+            task_output, manager_token_usage
+        ), manager_token_usage
 
     def copy(self):
         """Create a deep copy of the Crew."""
@@ -456,7 +463,7 @@ class Crew(BaseModel, Chainable):
             "_cache_handler",
             "_short_term_memory",
             "_long_term_memory",
-            "_entity_memory"
+            "_entity_memory",
             "agents",
             "tasks",
         }
@@ -470,8 +477,7 @@ class Crew(BaseModel, Chainable):
         copied_data.pop("agents", None)
         copied_data.pop("tasks", None)
 
-        copied_crew = Crew(
-            **copied_data, agents=cloned_agents, tasks=cloned_tasks)
+        copied_crew = Crew(**copied_data, agents=cloned_agents, tasks=cloned_tasks)
 
         return copied_crew
     
@@ -489,18 +495,28 @@ class Crew(BaseModel, Chainable):
 
     def _interpolate_inputs(self, inputs: Dict[str, Any]) -> None:
         """Interpolates the inputs in the tasks and agents."""
-        [task.interpolate_inputs(
-            # type: ignore # "interpolate_inputs" of "Task" does not return a value (it only ever returns None)
-            inputs) for task in self.tasks]
+        [
+            task.interpolate_inputs(
+                # type: ignore # "interpolate_inputs" of "Task" does not return a value (it only ever returns None)
+                inputs
+            )
+            for task in self.tasks
+        ]
         # type: ignore # "interpolate_inputs" of "Agent" does not return a value (it only ever returns None)
         [agent.interpolate_inputs(inputs) for agent in self.agents]
 
-    def _format_output(self, output: str) -> str:
-        """Formats the output of the crew execution."""
+    def _format_output(
+        self, output: str, token_usage: Optional[Dict[str, Any]]
+    ) -> Union[str, Dict[str, Any]]:
+        """
+        Formats the output of the crew execution.
+        If full_output is True, then returned data type will be a dictionary else returned outputs are string
+        """
         if self.full_output:
             return {  # type: ignore # Incompatible return value type (got "dict[str, Sequence[str | TaskOutput | None]]", expected "str")
                 "final_output": output,
                 "tasks_outputs": [task.output for task in self.tasks if task],
+                "usage_metrics": token_usage,
             }
         else:
             return output
