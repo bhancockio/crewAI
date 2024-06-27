@@ -215,6 +215,17 @@ class Crew(BaseModel):
                     agent.set_rpm_controller(self._rpm_controller)
         return self
 
+    @model_validator(mode="after")
+    def check_if_sequential_tasks_have_agent(self):
+        if self.process == Process.sequential:
+            for task in self.tasks:
+                if not task.agent:
+                    raise PydanticCustomError(
+                        "missing_agent_in_task",
+                        f"Agent is missing in the task with the following description: {task.description}",
+                        {},
+                    )
+
     def _setup_from_config(self):
         assert self.config is not None, "Config should not be None."
 
@@ -385,6 +396,7 @@ class Crew(BaseModel):
         """Creates and assigns a manager agent to make sure the crew completes the tasks."""
 
         i18n = I18N(prompt_file=self.prompt_file)
+        # TODO:
         if self.manager_agent is not None:
             self.manager_agent.allow_delegation = True
             manager = self.manager_agent
@@ -412,6 +424,10 @@ class Crew(BaseModel):
                     agent=manager.role, task=task.description, status="started"
                 )
 
+            # TODO: JOAO SUGGESTION - If there is an agent connected to the task,
+            #           we should allow de
+            # TODO: SHOULD WE BE SETTING THE AGENT CONNECTED TO THE TASK HERE?
+
             task_output = task.execute(
                 agent=manager, context=task_output, tools=manager.tools
             )
@@ -432,9 +448,10 @@ class Crew(BaseModel):
         token_usage.append(manager_token_usage)
         token_usage_formatted = self.aggregate_token_usage(token_usage)
 
-        return self._format_output(
-            task_output, token_usage_formatted
-        ), manager_token_usage
+        return (
+            self._format_output(task_output, token_usage_formatted),
+            manager_token_usage,
+        )
 
     def copy(self):
         """Create a deep copy of the Crew."""

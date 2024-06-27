@@ -162,6 +162,63 @@ def test_hierarchical_process():
     )
 
 
+@pytest.mark.vcr(filter_headers=["authorization"])
+def test_sequential_crew_creation_tasks_without_agents():
+    task = Task(
+        description="Come up with a list of 5 interesting ideas to explore for an article, then write one amazing paragraph highlight for each idea that showcases how good an article about this topic could be. Return the list of ideas with their paragraph and your notes.",
+        expected_output="5 bullet points with a paragraph for each idea.",
+    )
+
+    # Expected Output: The sequential crew should fail to create because the task is missing an agent
+    with pytest.raises(pydantic_core._pydantic_core.ValidationError) as exec_info:
+        Crew(
+            tasks=[task],
+            agents=[],
+            process=Process.sequential,
+        )
+
+    assert exec_info.value.errors()[0]["type"] == "missing_agent_in_task"
+    assert (
+        "Agent is missing in the task with the following description"
+        in exec_info.value.errors()[0]["msg"]
+    )
+
+
+@pytest.mark.vcr(filter_headers=["authorization"])
+def test_hierarchical_crew_creation_tasks_without_agents():
+    from langchain_openai import ChatOpenAI
+    from unittest.mock import call, patch
+
+    task = Task(
+        description="Write one amazing paragraph about AI.",
+        expected_output="A single paragraph with 4 sentences.",
+    )
+
+    crew = Crew(
+        tasks=[task],
+        agents=[writer],
+        process=Process.hierarchical,
+        manager_llm=ChatOpenAI(model="gpt-4o"),
+    )
+
+    # Expected output: The crew was created successfully
+    assert crew.process == Process.hierarchical
+    assert crew.manager_llm is not None
+
+    with patch
+
+    # Expected Output: The hierarchical crew should run successfully and delegate the task to the appropriate agent
+    # TODO: Make sure that the writer agent performs the task
+    # TODO: Make sure manager llm was called
+    # TODO: Make sure manager llm delegated task to writer
+
+    result = crew.kickoff()
+    print("RESULT FROM THIS:", result)
+    assert result.startswith(
+        "Artificial Intelligence (AI) has the transformative potential"
+    )
+
+
 def test_manager_llm_requirement_for_hierarchical_process():
     task = Task(
         description="Come up with a list of 5 interesting ideas to explore for an article, then write one amazing paragraph highlight for each idea that showcases how good an article about this topic could be. Return the list of ideas with their paragraph and your notes.",
